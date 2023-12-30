@@ -27,20 +27,12 @@
 // LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-/**
- * @file interface.cpp
- * @brief svZeroDSolver callable interface.
- */
+
 #include "interface.h"
 
 #include <cmath>
 
-//#include "io/configreader.hpp"
-
-typedef double T;
-
-template <typename TT>
-using S = ALGEBRA::SparseSystem<TT>;
+#include "SimulationParameters.h"
 
 // Static member data.
 int SolverInterface::problem_id_count_ = 0;
@@ -67,34 +59,32 @@ extern "C" void initialize(std::string input_file, int& problem_id,
                            std::vector<std::string>& block_names,
                            std::vector<std::string>& variable_names);
 
-extern "C" void set_external_step_size(const int problem_id,
+extern "C" void set_external_step_size(int problem_id,
                                        double external_step_size);
 
-extern "C" void increment_time(const int problem_id, const double external_time,
+extern "C" void increment_time(int problem_id, const double external_time,
                                std::vector<double>& solution);
 
-extern "C" void run_simulation(const int problem_id, const double external_time,
+extern "C" void run_simulation(int problem_id, const double external_time,
                                std::vector<double>& output_times,
                                std::vector<double>& output_solutions,
                                int& error_code);
 
-extern "C" void update_block_params(const int problem_id,
-                                    std::string block_name,
+extern "C" void update_block_params(int problem_id, std::string block_name,
                                     std::vector<double>& params);
 
-extern "C" void read_block_params(const int problem_id, std::string block_name,
+extern "C" void read_block_params(int problem_id, std::string block_name,
                                   std::vector<double>& params);
 
-extern "C" void get_block_node_IDs(const int problem_id, std::string block_name,
+extern "C" void get_block_node_IDs(int problem_id, std::string block_name,
                                    std::vector<int>& IDs);
 
-extern "C" void update_state(const int problem_id,
-                             std::vector<double> new_state_y,
+extern "C" void update_state(int problem_id, std::vector<double> new_state_y,
                              std::vector<double> new_state_ydot);
 
-extern "C" void return_y(const int problem_id, std::vector<double>& ydot);
+extern "C" void return_y(int problem_id, std::vector<double>& ydot);
 
-extern "C" void return_ydot(const int problem_id, std::vector<double>& ydot);
+extern "C" void return_ydot(int problem_id, std::vector<double>& ydot);
 
 /**
  * @brief Initialize the 0D solver interface.
@@ -123,15 +113,16 @@ void initialize(std::string input_file_arg, int& problem_id, int& pts_per_cycle,
   // Create configuration reader.
   std::ifstream ifs(input_file);
   const auto& config = nlohmann::json::parse(ifs);
-  auto simparams = IO::load_simulation_params<T>(config);
-  auto model = std::shared_ptr<MODEL::Model<T>>(new MODEL::Model<T>());
-  IO::load_simulation_model<T>(config, *model.get());
-  auto state = IO::load_initial_condition<T>(config, *model.get());
+  auto simparams = load_simulation_params(config);
+
+  auto model = std::shared_ptr<Model>(new Model());
+
+  load_simulation_model(config, *model.get());
+  auto state = load_initial_condition(config, *model.get());
 
   // Check that steady initial is not set when ClosedLoopHeartAndPulmonary is
   // used
-  if ((simparams.sim_steady_initial == true) &&
-      (model->get_block("CLH") != nullptr)) {
+  if ((simparams.sim_steady_initial == true) && (model->has_block("CLH"))) {
     std::runtime_error(
         "ERROR: Steady initial condition is not compatible with "
         "ClosedLoopHeartAndPulmonary block.");
@@ -146,11 +137,11 @@ void initialize(std::string input_file_arg, int& problem_id, int& pts_per_cycle,
 
   // Calculate time step size
   if (!simparams.sim_coupled) {
-    simparams.sim_time_step_size =
-        model->cardiac_cycle_period / (T(simparams.sim_pts_per_cycle) - 1.0);
+    simparams.sim_time_step_size = model->cardiac_cycle_period /
+                                   (double(simparams.sim_pts_per_cycle) - 1.0);
   } else {
     simparams.sim_time_step_size = simparams.sim_external_step_size /
-                                   (T(simparams.sim_num_time_steps) - 1.0);
+                                   (double(simparams.sim_num_time_steps) - 1.0);
   }
 
   // Create a model.
@@ -164,11 +155,11 @@ void initialize(std::string input_file_arg, int& problem_id, int& pts_per_cycle,
 
   // Get simulation parameters
   interface->time_step_size_ = simparams.sim_time_step_size;
+  interface->rho_infty_ = simparams.sim_rho_infty;
   interface->max_nliter_ = simparams.sim_nliter;
   interface->absolute_tolerance_ = simparams.sim_abs_tol;
   interface->time_step_ = 0;
   interface->system_size_ = model->dofhandler.size();
-  interface->output_interval_ = simparams.output_interval;
   interface->num_time_steps_ = simparams.sim_num_time_steps;
   interface->pts_per_cycle_ = simparams.sim_pts_per_cycle;
   pts_per_cycle = simparams.sim_pts_per_cycle;
@@ -197,17 +188,17 @@ void initialize(std::string input_file_arg, int& problem_id, int& pts_per_cycle,
   // Create steady initial state.
   if (simparams.sim_steady_initial) {
     DEBUG_MSG("[initialize] ----- Calculating steady initial condition ----- ");
-    T time_step_size_steady = model->cardiac_cycle_period / 10.0;
+    double time_step_size_steady = model->cardiac_cycle_period / 10.0;
     DEBUG_MSG("[initialize] Create steady model ... ");
 
     auto model_steady = model;
     model_steady->to_steady();
-    ALGEBRA::Integrator<T> integrator_steady(
-        model_steady.get(), time_step_size_steady, 0.1,
+    Integrator integrator_steady(
+        model_steady.get(), time_step_size_steady, interface->rho_infty_,
         interface->absolute_tolerance_, interface->max_nliter_);
 
     for (size_t i = 0; i < 31; i++) {
-      state = integrator_steady.step(state, time_step_size_steady * T(i));
+      state = integrator_steady.step(state, time_step_size_steady * double(i));
     }
   }
   // TODO: Set back to unsteady
@@ -218,9 +209,9 @@ void initialize(std::string input_file_arg, int& problem_id, int& pts_per_cycle,
   interface->states_.resize(num_output_steps);
 
   // Initialize integrator
-  interface->integrator_ = ALGEBRA::Integrator<T>(
-      model.get(), interface->time_step_size_, 0.1,
-      interface->absolute_tolerance_, interface->max_nliter_);
+  interface->integrator_ =
+      Integrator(model.get(), interface->time_step_size_, interface->rho_infty_,
+                 interface->absolute_tolerance_, interface->max_nliter_);
 
   DEBUG_MSG("[initialize] Done");
 }
@@ -232,7 +223,7 @@ void initialize(std::string input_file_arg, int& problem_id, int& pts_per_cycle,
  * @param problem_id The returned ID used to identify the 0D problem.
  * @param external_step_size The time step size of the external program.
  */
-void set_external_step_size(const int problem_id, double external_step_size) {
+void set_external_step_size(int problem_id, double external_step_size) {
   auto interface = SolverInterface::interface_list_[problem_id];
   auto model = interface->model_;
 
@@ -241,7 +232,7 @@ void set_external_step_size(const int problem_id, double external_step_size) {
 
   // Update time step size in interface
   double zerod_step_size =
-      external_step_size / (T(interface->num_time_steps_) - 1.0);
+      external_step_size / (double(interface->num_time_steps_) - 1.0);
   interface->time_step_size_ = zerod_step_size;
 }
 
@@ -252,25 +243,22 @@ void set_external_step_size(const int problem_id, double external_step_size) {
  * @param block name The name of the block to update.
  * @param params New parameters for the block (structure depends on block type).
  */
-void update_block_params(const int problem_id, std::string block_name,
+void update_block_params(int problem_id, std::string block_name,
                          std::vector<double>& params) {
   auto interface = SolverInterface::interface_list_[problem_id];
   auto model = interface->model_;
 
   // Find the required block
   auto block = model->get_block(block_name);
-  if (block == nullptr) {
-    throw std::runtime_error("Could not find block with name " + block_name);
-  }
   auto block_type = model->get_block_type(block_name);
   // Update is handled differently for blocks that have time-varying parameters
   // (PRESSUREBC and FLOWBC)
   // TODO: Does this need to be done for OPENLOOPCORONARYBC and RESISTANCEBC
   // too?
-  if ((block_type == MODEL::BlockType::PRESSUREBC) ||
-      (block_type == MODEL::BlockType::FLOWBC)) {
-    std::vector<T> times_new;
-    std::vector<T> values_new;
+  if ((block_type == BlockType::pressure_bc) ||
+      (block_type == BlockType::flow_bc)) {
+    std::vector<double> times_new;
+    std::vector<double> values_new;
     int num_time_pts = (int)params[0];
     for (int i = 0; i < num_time_pts; i++) {
       times_new.push_back(params[1 + i]);
@@ -303,14 +291,11 @@ void update_block_params(const int problem_id, std::string block_name,
  * @param block name The name of the block to read.
  * @param params Parameters of the block (structure depends on block type).
  */
-void read_block_params(const int problem_id, std::string block_name,
+void read_block_params(int problem_id, std::string block_name,
                        std::vector<double>& params) {
   auto interface = SolverInterface::interface_list_[problem_id];
   auto model = interface->model_;
   auto block = model->get_block(block_name);
-  if (block == nullptr) {
-    throw std::runtime_error("Could not find block with name " + block_name);
-  }
   if (params.size() != block->global_param_ids.size()) {
     throw std::runtime_error(
         "Parameter vector (given size = " + std::to_string(params.size()) +
@@ -333,7 +318,7 @@ void read_block_params(const int problem_id, std::string block_name,
  * order: {num inlet nodes, inlet flow[0], inlet pressure[0],..., num outlet
  * nodes, outlet flow[0], outlet pressure[0],...}.
  */
-void get_block_node_IDs(const int problem_id, std::string block_name,
+void get_block_node_IDs(int problem_id, std::string block_name,
                         std::vector<int>& IDs) {
   auto interface = SolverInterface::interface_list_[problem_id];
   auto model = interface->model_;
@@ -363,7 +348,7 @@ void get_block_node_IDs(const int problem_id, std::string block_name,
  * @param problem_id The ID used to identify the 0D problem.
  * @param y The state vector containing all state.y degrees-of-freedom.
  */
-void return_y(const int problem_id, std::vector<double>& y) {
+void return_y(int problem_id, std::vector<double>& y) {
   auto interface = SolverInterface::interface_list_[problem_id];
   auto model = interface->model_;
   auto system_size = interface->system_size_;
@@ -384,7 +369,7 @@ void return_y(const int problem_id, std::vector<double>& y) {
  * @param problem_id The ID used to identify the 0D problem.
  * @param ydot The state vector containing all state.ydot degrees-of-freedom.
  */
-void return_ydot(const int problem_id, std::vector<double>& ydot) {
+void return_ydot(int problem_id, std::vector<double>& ydot) {
   auto interface = SolverInterface::interface_list_[problem_id];
   auto model = interface->model_;
   auto system_size = interface->system_size_;
@@ -408,7 +393,7 @@ void return_ydot(const int problem_id, std::vector<double>& ydot) {
  * @param new_state_ydot The new state vector containing all state.ydot
  * degrees-of-freedom.
  */
-void update_state(const int problem_id, std::vector<double> new_state_y,
+void update_state(int problem_id, std::vector<double> new_state_y,
                   std::vector<double> new_state_ydot) {
   auto interface = SolverInterface::interface_list_[problem_id];
   auto model = interface->model_;
@@ -434,7 +419,7 @@ void update_state(const int problem_id, std::vector<double> new_state_y,
  * @param external_time The current time in the external program.
  * @param solution The solution vector containing all degrees-of-freedom.
  */
-void increment_time(const int problem_id, const double external_time,
+void increment_time(int problem_id, const double external_time,
                     std::vector<double>& solution) {
   auto interface = SolverInterface::interface_list_[problem_id];
   auto model = interface->model_;
@@ -442,8 +427,8 @@ void increment_time(const int problem_id, const double external_time,
   auto time_step_size = interface->time_step_size_;
   auto absolute_tolerance = interface->absolute_tolerance_;
   auto max_nliter = interface->max_nliter_;
-  ALGEBRA::Integrator<T> integrator(model.get(), time_step_size, 0.1,
-                                    absolute_tolerance, max_nliter);
+  Integrator integrator(model.get(), time_step_size, interface->rho_infty_,
+                        absolute_tolerance, max_nliter);
   auto state = interface->state_;
   interface->state_ = integrator.step(state, external_time);
   interface->time_step_ += 1;
@@ -465,7 +450,7 @@ void increment_time(const int problem_id, const double external_time,
  * @param error_code This is 1 if a NaN is found in the solution vector, 0
  * otherwise.
  */
-void run_simulation(const int problem_id, const double external_time,
+void run_simulation(int problem_id, const double external_time,
                     std::vector<double>& output_times,
                     std::vector<double>& output_solutions, int& error_code) {
   auto interface = SolverInterface::interface_list_[problem_id];
@@ -482,7 +467,7 @@ void run_simulation(const int problem_id, const double external_time,
   integrator.update_params(time_step_size);
 
   auto state = interface->state_;
-  T time = external_time;
+  double time = external_time;
 
   interface->times_[0] = time;
   interface->states_[0] = state;
@@ -519,7 +504,7 @@ void run_simulation(const int problem_id, const double external_time,
   int output_idx = 0;
   int soln_idx = 0;
   int start_idx = 0;
-  T start_time = 0.0;
+  double start_time = 0.0;
   if (interface->output_last_cycle_only_) {  // NOT TESTED
     start_idx = interface->num_time_steps_ - interface->pts_per_cycle_;
     start_time = interface->times_[start_idx];

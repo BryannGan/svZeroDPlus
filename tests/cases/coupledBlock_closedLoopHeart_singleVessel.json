@@ -4,7 +4,7 @@
     },
     "simulation_parameters": {
         "number_of_cardiac_cycles": 10,
-        "number_of_time_pts_per_cardiac_cycle": 50,
+        "number_of_time_pts_per_cardiac_cycle": 10000,
         "steady_initial": false,
         "output_variable_based": true
     },
@@ -20,7 +20,6 @@
                 "Rd": 1.356472458,
                 "_comment_": "C = 0.228215*1.044637",
                 "C": 0.238401833,
-                "unsteady": false,
                 "closed_loop_outlet": true
             }
         }
@@ -251,8 +250,6 @@
             }
         }
     ],
-    "junctions": [],
-    "vessels": [],
     "closed_loop_blocks": [
         {
             "outlet_blocks": [

@@ -2,6 +2,9 @@
 __pycache__
 *.pyc
 
+# simulation output
+*.csv
+
 # macOS file system
 .DS_Store
 
@@ -18,11 +21,7 @@ __pycache__
 public
 
 # Documentation
-docs/html
-docs/python/source/*.rst
-!docs/python/source/index.rst
-!docs/python/source/modules.rst
-docs/python/build
+docs/build
 
 # C++ build and externals directories
 Release*/
@@ -30,3 +29,8 @@ Debug*/
 externals/
 *.so
 build
+
+# IDE
+.cproject
+.project
+.settings

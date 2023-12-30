@@ -5,11 +5,13 @@ jobs:
   clang-format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install dependencies
         run: |
           sudo apt install clang-format
       - name: Run clang-format
         run: |
-          cd src
-          find **/*.hpp **/*.cpp | xargs clang-format --dry-run --style=Google --Werror
+          mkdir Release
+          cd Release
+          cmake ..
+          make codecheck
